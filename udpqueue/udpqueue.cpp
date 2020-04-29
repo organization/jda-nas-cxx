@@ -341,21 +341,23 @@ namespace Manager {
     }
 }
 
+extern "C" {
+
 JNIEXPORT jlong JNICALL
-Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_create(JNIEnv *jni, jobject me,
+Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_create(JNIEnv* jni, jobject me,
                                                                                      jint queue_buffer_capacity,
                                                                                      jlong packet_interval) {
     return reinterpret_cast<jlong>(Manager::create(queue_buffer_capacity, packet_interval));
 }
 
 JNIEXPORT void JNICALL
-Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_destroy(JNIEnv *jni, jobject me,
+Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_destroy(JNIEnv* jni, jobject me,
                                                                                       jlong instance) {
     Manager::destroy(reinterpret_cast<queue::Manager*>(instance));
 }
 
 JNIEXPORT jint JNICALL
-Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_getRemainingCapacity(JNIEnv *jni,
+Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_getRemainingCapacity(JNIEnv* jni,
                                                                                                    jobject me,
                                                                                                    jlong instance,
                                                                                                    jlong key) {
@@ -363,7 +365,7 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_ge
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_queuePacket(JNIEnv *jni, jobject me,
+Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_queuePacket(JNIEnv* jni, jobject me,
                                                                                           jlong instance, jlong key,
                                                                                           jstring address_string,
                                                                                           jint port,
@@ -383,7 +385,7 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_qu
 
 JNIEXPORT jboolean JNICALL
 Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_queuePacketWithSocket(
-        JNIEnv *jni, jobject me, jlong instance, jlong key, jstring address_string, jint port, jobject data_buffer,
+        JNIEnv* jni, jobject me, jlong instance, jlong key, jstring address_string, jint port, jobject data_buffer,
         jint data_length, jlong socket_handle) {
 
     const char* address = jni->GetStringUTFChars(address_string, nullptr);
@@ -398,35 +400,35 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_qu
 }
 
 JNIEXPORT jboolean JNICALL Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_deleteQueue(
-        JNIEnv *jni, jobject me, jlong instance, jlong key) {
+        JNIEnv* jni, jobject me, jlong instance, jlong key) {
 
     bool result = Manager::queue_delete(reinterpret_cast<queue::Manager*>(instance), key);
     return result ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
-Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_process(JNIEnv *jni, jobject me,
+Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_process(JNIEnv* jni, jobject me,
                                                                                       jlong instance) {
-    Manager::process((queue::Manager *) instance);
+    Manager::process((queue::Manager*) instance);
 }
 
 JNIEXPORT void JNICALL Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_processWithSocket(
-        JNIEnv *jni, jobject me, jlong instance, jlong socket_v4, jlong socket_v6) {
+        JNIEnv* jni, jobject me, jlong instance, jlong socket_v4, jlong socket_v6) {
 
-    Manager::process_with_socket((queue::Manager *) instance, (socket_t) socket_v4, (socket_t) socket_v6);
+    Manager::process_with_socket((queue::Manager*) instance, (socket_t) socket_v4, (socket_t) socket_v6);
 }
 
-jint JNICALL waiting_iterate_callback(jlong class_tag, jlong size, jlong *tag_ptr, jint length, void *user_data) {
+jint JNICALL waiting_iterate_callback(jlong class_tag, jlong size, jlong* tag_ptr, jint length, void* user_data) {
     int wait_duration = *(reinterpret_cast<int*>(user_data));
     timing_sleep(wait_duration * 1000000LL);
     return JVMTI_VISIT_ABORT;
 }
 
 JNIEXPORT void JNICALL
-Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_pauseDemo(JNIEnv *jni, jclass me,
+Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_pauseDemo(JNIEnv* jni, jclass me,
                                                                                         jint length) {
-    jvmtiEnv *jvmti;
-    JavaVM *vm;
+    jvmtiEnv* jvmti;
+    JavaVM* vm;
 
     if (jni->GetJavaVM(&vm) != JNI_OK) {
         return;
@@ -447,4 +449,5 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_pa
 
     jvmti->IterateThroughHeap(0, nullptr, &callbacks, &length);
     jvmti->DisposeEnvironment();
+}
 }

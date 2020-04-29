@@ -16,9 +16,9 @@ endif ()
 
 if ("${CMAKE_C_COMPILER_ID}" STREQUAL "MSVC")
 	add_definitions(-Dinline=__inline)
-	set(CMAKE_C_FLAGS_RELEASE "/MT /Ox")
+	set(CMAKE_CXX_FLAGS_RELEASE "/MT /O2")
 else ()
-	set(CMAKE_C_FLAGS_RELEASE "-Ofast")
+	set(CMAKE_CXX_FLAGS_RELEASE "-Ofast")
 endif ()
 
 include_directories("$ENV{JAVA_HOME}/include/")
