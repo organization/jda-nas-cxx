@@ -8,7 +8,9 @@
 #include "timing.h"
 #include "tsl/ordered_map.h"
 
-#include <mutex>
+extern "C" {
+#include "mutex.h"
+}
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) && !defined(__CYGWIN__)
 #define WIN32_LEAN_AND_MEAN
@@ -66,8 +68,8 @@ namespace queue {
         tsl::ordered_map<int64_t, Item> queues;
         size_t queue_buffer_capacity{};
         int64_t packet_interval{};
-        std::mutex lock{};
-        std::mutex process_lock{};
+        mutex_t lock{};
+        mutex_t process_lock{};
         bool shutting_down{};
     };
 
@@ -95,17 +97,24 @@ namespace queue {
 namespace Manager {
 
     static void destroy(queue::Manager *manager) {
-        manager->lock.lock();
+        mutex_lock(manager->lock);
         manager->shutting_down = true;
-        manager->lock.unlock();
+        mutex_unlock(manager->lock);
 
-        manager->process_lock.lock();
-        manager->process_lock.unlock();
+        mutex_lock(manager->process_lock);
+        mutex_unlock(manager->process_lock);
+
+        mutex_destroy(manager->lock);
+        mutex_destroy(manager->process_lock);
+
         delete manager;
     }
 
     static queue::Manager *create(size_t queue_buffer_capacity, int64_t packet_interval) {
         auto manager = new queue::Manager;
+
+        manager->lock = mutex_create();
+        manager->process_lock = mutex_create();
 
         manager->queue_buffer_capacity = queue_buffer_capacity;
         manager->packet_interval = packet_interval;
@@ -114,7 +123,7 @@ namespace Manager {
     }
 
     static size_t get_remaining_capacity(queue::Manager *manager, uint64_t key) {
-        manager->lock.lock();
+        mutex_lock(manager->lock);
 
         size_t remaining;
 
@@ -125,7 +134,7 @@ namespace Manager {
             remaining = (jint) manager->queue_buffer_capacity;
         }
 
-        manager->lock.unlock();
+        mutex_unlock(manager->lock);
 
         return remaining;
     }
@@ -205,9 +214,9 @@ namespace Manager {
 
         std::memcpy(bytes, data, data_length);
 
-        manager->lock.lock();
+        mutex_lock(manager->lock);
         bool result = queue_packet_locked(manager, key, address, port, bytes, data_length, explicit_socket);
-        manager->lock.unlock();
+        mutex_unlock(manager->lock);
 
         if (!result) {
             delete[] bytes;
@@ -218,7 +227,7 @@ namespace Manager {
 
     static bool queue_delete(queue::Manager *manager, uint64_t key) {
         bool found = false;
-        manager->lock.lock();
+        mutex_lock(manager->lock);
 
         if (manager->queues.count(key)) {
             found = true;
@@ -234,7 +243,7 @@ namespace Manager {
             }
         }
 
-        manager->lock.unlock();
+        mutex_unlock(manager->lock);
         return found;
     }
 
@@ -293,13 +302,13 @@ namespace Manager {
     }
 
     static void process_with_socket(queue::Manager *manager, socket_t socket_v4, socket_t socket_v6) {
-        manager->process_lock.lock();
+        mutex_lock(manager->process_lock);
 
         while (true) {
-            manager->lock.lock();
+            mutex_lock(manager->lock);
 
             if (manager->shutting_down) {
-                manager->lock.unlock();
+                mutex_unlock(manager->lock);
                 break;
             }
 
@@ -307,7 +316,7 @@ namespace Manager {
             packet::Unsent packet_to_send = {nullptr};
 
             int64_t target_time = process_next_locked(manager, packet_to_send, current_time);
-            manager->lock.unlock();
+            mutex_unlock(manager->lock);
 
             if (packet_to_send.packet.data != nullptr) {
                 if (packet_to_send.explicit_socket == SOCKET_INVALID) {
@@ -327,7 +336,7 @@ namespace Manager {
             }
         }
 
-        manager->process_lock.unlock();
+        mutex_unlock(manager->process_lock);
     }
 
     static void process(queue::Manager *manager) {

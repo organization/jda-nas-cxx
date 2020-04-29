@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0)
-project(udpqueue CXX)
+project(udpqueue)
 
 set(CMAKE_CXX_STANDARD 14)
 
@@ -28,7 +28,7 @@ if (DEFINED ENV{DIST_DIR})
 	set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "$ENV{DIST_DIR}")
 endif ()
 
-add_library(udpqueue SHARED udpqueue.cpp)
+add_library(udpqueue SHARED udpqueue.cpp ${SYSNAME}/mutex.c)
 
 if (${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
 	target_link_libraries(udpqueue ws2_32)
