@@ -35,15 +35,15 @@ typedef int socket_t;
 namespace packet {
     class Queued {
     public:
-        uint8_t *data;
+        std::shared_ptr<uint8_t[]> data;
         size_t length;
     };
 
     class Unsent {
     public:
         Queued packet;
-        addrinfo* address;
-        socket_t explicit_socket;
+        addrinfo* address{};
+        socket_t explicit_socket{};
     };
 }
 
@@ -89,7 +89,7 @@ namespace queue {
         packet_out.address = item.address;
         packet_out.explicit_socket = item.explicit_socket;
 
-        packet.data = nullptr;
+        packet.data.reset();
         packet.length = 0;
     }
 }
@@ -156,14 +156,14 @@ namespace Manager {
 
         std::snprintf(port_text, sizeof(port_text), "%" PRId32, port);
 
-        addrinfo *result = nullptr;
+        addrinfo* result = nullptr;
         getaddrinfo(address, port_text, &hints, &result);
 
         return result;
     }
 
-    static bool queue_packet_locked(queue::Manager *manager, uint64_t key, const char *address, int32_t port,
-                                    uint8_t *data, size_t data_length, socket_t explicit_socket) {
+    static bool queue_packet_locked(queue::Manager* manager, uint64_t key, const char* address, int32_t port,
+                                    std::shared_ptr<uint8_t[]>& data, size_t data_length, socket_t explicit_socket) {
 
         if (!manager->queues.count(key)) {
             queue::Item item;
@@ -205,22 +205,16 @@ namespace Manager {
     static bool queue_packet(queue::Manager *manager, uint64_t key, const char *address, int32_t port, void *data,
                              size_t data_length, socket_t explicit_socket) {
 
-        uint8_t* bytes;
+        std::shared_ptr<uint8_t[]> bytes = std::shared_ptr<uint8_t[]>(new uint8_t[data_length], std::default_delete<uint8_t[]>());
 
-        try {
-            bytes = new uint8_t[data_length];
-        } catch (const std::bad_alloc& e) {
-            return false;
-        }
-
-        std::memcpy(bytes, data, data_length);
+        std::memcpy(bytes.get(), data, data_length);
 
         mutex_lock(manager->lock);
         bool result = queue_packet_locked(manager, key, address, port, bytes, data_length, explicit_socket);
         mutex_unlock(manager->lock);
 
         if (!result) {
-            delete[] bytes;
+            bytes.reset();
         }
 
         return result;
@@ -239,8 +233,7 @@ namespace Manager {
                     packet::Unsent unsent_packet{};
                     queue::pop_packet(item, unsent_packet);
 
-                    delete[] unsent_packet.packet.data;
-                    unsent_packet.packet.data = nullptr;
+                    unsent_packet.packet.data.reset();
                 }
             }
         }
@@ -263,7 +256,7 @@ namespace Manager {
         auto item = item_pair.second;
         auto key = item_pair.first;
 
-        packet_out.packet.data = nullptr;
+        packet_out.packet.data.reset();
         packet_out.address = nullptr;
         packet_out.explicit_socket = SOCKET_INVALID;
 
@@ -296,11 +289,10 @@ namespace Manager {
     }
 
     static void dispatch_packet(socket_t socket_vx, packet::Unsent &unsent_packet) {
-        sendto(socket_vx, (const char *) unsent_packet.packet.data, (int) unsent_packet.packet.length, 0,
+        sendto(socket_vx, reinterpret_cast<const char*>(unsent_packet.packet.data.get()), unsent_packet.packet.length, 0,
                unsent_packet.address->ai_addr, sizeof(*unsent_packet.address->ai_addr));
 
-        delete[] unsent_packet.packet.data;
-        unsent_packet.packet.data = nullptr;
+        unsent_packet.packet.data.reset();
         unsent_packet.packet.length = 0;
     }
 
