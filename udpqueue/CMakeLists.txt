@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.0)
 project(udpqueue CXX)
 
+set(CMAKE_CXX_STANDARD 14)
+
 if (${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
 	include_directories("$ENV{JAVA_HOME}/include/win32")
 	set(SYSNAME "win")
@@ -14,7 +16,9 @@ endif ()
 
 if ("${CMAKE_C_COMPILER_ID}" STREQUAL "MSVC")
 	add_definitions(-Dinline=__inline)
-	set(CMAKE_C_FLAGS_RELEASE "/MT")
+	set(CMAKE_C_FLAGS_RELEASE "/MT /Ox")
+else ()
+	set(CMAKE_C_FLAGS_RELEASE "-Ofast")
 endif ()
 
 include_directories("$ENV{JAVA_HOME}/include/")
@@ -24,7 +28,7 @@ if (DEFINED ENV{DIST_DIR})
 	set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE "$ENV{DIST_DIR}")
 endif ()
 
-add_library(udpqueue SHARED udpqueue.cpp timing.h)
+add_library(udpqueue SHARED udpqueue.cpp)
 
 if (${CMAKE_SYSTEM_NAME} STREQUAL "Windows")
 	target_link_libraries(udpqueue ws2_32)

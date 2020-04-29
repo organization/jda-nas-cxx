@@ -1,21 +1,20 @@
 #include <jni.h>
 #include <jvmti.h>
 
-#include <cstdlib>
 #include <cinttypes>
 #include <cstring>
 
-#include "tsl/ordered_map.h"
+#include "lni/vector.hpp"
 #include "timing.h"
+#include "tsl/ordered_map.h"
+
+#include <mutex>
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) && !defined(__CYGWIN__)
 #define WIN32_LEAN_AND_MEAN
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
-
-#include <vector>
-#include <mutex>
 
 #define SOCKET_INVALID INVALID_SOCKET
 typedef SOCKET socket_t;
@@ -41,14 +40,13 @@ namespace packet {
     class Unsent {
     public:
         Queued packet;
-        struct addrinfo *address;
+        addrinfo* address;
         socket_t explicit_socket;
     };
 }
 
 namespace queue {
-    class Buffer {
-    public:
+    struct Buffer {
         size_t index;
         size_t size;
         size_t capacity;
@@ -57,7 +55,7 @@ namespace queue {
     class Item {
     public:
         int64_t next_due_time{};
-        std::vector<packet::Queued> packet_buffer;
+        lni::vector<packet::Queued> packet_buffer;
         Buffer buffer{};
         addrinfo *address{};
         socket_t explicit_socket{};
@@ -73,7 +71,7 @@ namespace queue {
         bool shutting_down{};
     };
 
-    static void entry_free(const queue::Item &entry) {
+    static void addrinfo_free(const queue::Item& entry) {
         if (entry.address != nullptr) {
             freeaddrinfo(entry.address);
         }
@@ -101,13 +99,13 @@ namespace Manager {
         manager->shutting_down = true;
         manager->lock.unlock();
 
-        //manager->process_lock.lock();
-        //manager->process_lock.unlock();
+        manager->process_lock.lock();
+        manager->process_lock.unlock();
         delete manager;
     }
 
     static queue::Manager *create(size_t queue_buffer_capacity, int64_t packet_interval) {
-        auto manager = new queue::Manager();
+        auto manager = new queue::Manager;
 
         manager->queue_buffer_capacity = queue_buffer_capacity;
         manager->packet_interval = packet_interval;
@@ -137,7 +135,7 @@ namespace Manager {
 
         addrinfo hints{};
 
-        memset(&hints, 0, sizeof(hints));
+        std::memset(&hints, 0, sizeof(hints));
 
 #ifndef AI_NUMERICSERV
         hints.ai_flags = AI_NUMERICHOST;
@@ -147,7 +145,7 @@ namespace Manager {
         hints.ai_socktype = SOCK_DGRAM;
         hints.ai_protocol = IPPROTO_UDP;
 
-        snprintf(port_text, sizeof(port_text), "%" PRId32, port);
+        std::snprintf(port_text, sizeof(port_text), "%" PRId32, port);
 
         addrinfo *result = nullptr;
         getaddrinfo(address, port_text, &hints, &result);
@@ -170,22 +168,26 @@ namespace Manager {
             item.explicit_socket = explicit_socket;
 
             if (item.address == nullptr) {
-                queue::entry_free(item);
+                queue::addrinfo_free(item);
                 return false;
             }
 
             manager->queues[key] = item;
         }
 
-        queue::Item &item = manager->queues[key];
+        queue::Item& item = manager->queues[key];
 
         if (item.buffer.size >= item.buffer.capacity) {
             return false;
         }
 
         size_t next_index = (item.buffer.index + item.buffer.size) % item.buffer.capacity;
-        item.packet_buffer[next_index].data = data;
-        item.packet_buffer[next_index].length = data_length;
+
+        packet::Queued queued_packet{
+                data,
+                data_length};
+
+        item.packet_buffer.emplace(item.packet_buffer.begin() + next_index, queued_packet);
         item.buffer.size++;
         return true;
     }
@@ -193,19 +195,22 @@ namespace Manager {
     static bool queue_packet(queue::Manager *manager, uint64_t key, const char *address, int32_t port, void *data,
                              size_t data_length, socket_t explicit_socket) {
 
-        auto *bytes = static_cast<uint8_t *>(malloc(data_length));
-        if (bytes == nullptr) {
+        uint8_t* bytes;
+
+        try {
+            bytes = new uint8_t[data_length];
+        } catch (const std::bad_alloc& e) {
             return false;
         }
 
-        memcpy(bytes, data, data_length);
+        std::memcpy(bytes, data, data_length);
 
         manager->lock.lock();
         bool result = queue_packet_locked(manager, key, address, port, bytes, data_length, explicit_socket);
         manager->lock.unlock();
 
         if (!result) {
-            free(bytes);
+            delete[] bytes;
         }
 
         return result;
@@ -220,13 +225,11 @@ namespace Manager {
             queue::Item &item = manager->queues[key];
 
             if (item.buffer.size > 0) {
-
                 while (item.buffer.size > 0) {
                     packet::Unsent unsent_packet{};
                     queue::pop_packet(item, unsent_packet);
 
-                    free(unsent_packet.packet.data);
-                    unsent_packet.packet.data = nullptr;
+                    delete[] unsent_packet.packet.data;
                 }
             }
         }
@@ -255,7 +258,7 @@ namespace Manager {
 
         if (item.buffer.size == 0) {
             manager->queues.erase(item_pair.first);
-            queue::entry_free(item);
+            queue::addrinfo_free(item);
             return get_target_time(manager, current_time);
         }
 
@@ -285,8 +288,7 @@ namespace Manager {
         sendto(socket_vx, (const char *) unsent_packet.packet.data, (int) unsent_packet.packet.length, 0,
                unsent_packet.address->ai_addr, sizeof(*unsent_packet.address->ai_addr));
 
-        free(unsent_packet.packet.data);
-        unsent_packet.packet.data = nullptr;
+        delete[] unsent_packet.packet.data;
         unsent_packet.packet.length = 0;
     }
 
@@ -343,13 +345,13 @@ JNIEXPORT jlong JNICALL
 Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_create(JNIEnv *jni, jobject me,
                                                                                      jint queue_buffer_capacity,
                                                                                      jlong packet_interval) {
-    return (jlong) Manager::create((size_t) queue_buffer_capacity, packet_interval);
+    return reinterpret_cast<jlong>(Manager::create(queue_buffer_capacity, packet_interval));
 }
 
 JNIEXPORT void JNICALL
 Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_destroy(JNIEnv *jni, jobject me,
                                                                                       jlong instance) {
-    Manager::destroy((queue::Manager *) instance);
+    Manager::destroy(reinterpret_cast<queue::Manager*>(instance));
 }
 
 JNIEXPORT jint JNICALL
@@ -357,7 +359,7 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_ge
                                                                                                    jobject me,
                                                                                                    jlong instance,
                                                                                                    jlong key) {
-    return (jint) Manager::get_remaining_capacity((queue::Manager *) instance, (uint64_t) key);
+    return Manager::get_remaining_capacity(reinterpret_cast<queue::Manager*>(instance), key);
 }
 
 JNIEXPORT jboolean JNICALL
@@ -368,11 +370,11 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_qu
                                                                                           jobject data_buffer,
                                                                                           jint data_length) {
 
-    const char *address = jni->GetStringUTFChars(address_string, nullptr);
-    void *bytes = jni->GetDirectBufferAddress(data_buffer);
+    const char* address = jni->GetStringUTFChars(address_string, nullptr);
+    void* bytes = jni->GetDirectBufferAddress(data_buffer);
 
-    bool result = Manager::queue_packet((queue::Manager *) instance, (uint64_t) key, address, port, bytes,
-                                        (size_t) data_length, SOCKET_INVALID);
+    bool result = Manager::queue_packet(reinterpret_cast<queue::Manager*>(instance), key, address, port, bytes,
+                                        data_length, SOCKET_INVALID);
 
     jni->ReleaseStringUTFChars(address_string, address);
 
@@ -384,11 +386,11 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_qu
         JNIEnv *jni, jobject me, jlong instance, jlong key, jstring address_string, jint port, jobject data_buffer,
         jint data_length, jlong socket_handle) {
 
-    const char *address = jni->GetStringUTFChars(address_string, nullptr);
-    void *bytes = jni->GetDirectBufferAddress(data_buffer);
+    const char* address = jni->GetStringUTFChars(address_string, nullptr);
+    void* bytes = jni->GetDirectBufferAddress(data_buffer);
 
-    bool result = Manager::queue_packet((queue::Manager *) instance, (uint64_t) key, address, port, bytes,
-                                        (size_t) data_length, (socket_t) socket_handle);
+    bool result = Manager::queue_packet(reinterpret_cast<queue::Manager*>(instance), key, address, port, bytes,
+                                        data_length, socket_handle);
 
     jni->ReleaseStringUTFChars(address_string, address);
 
@@ -398,7 +400,7 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_qu
 JNIEXPORT jboolean JNICALL Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_deleteQueue(
         JNIEnv *jni, jobject me, jlong instance, jlong key) {
 
-    bool result = Manager::queue_delete((queue::Manager *) instance, (uint64_t) key);
+    bool result = Manager::queue_delete(reinterpret_cast<queue::Manager*>(instance), key);
     return result ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -415,7 +417,7 @@ JNIEXPORT void JNICALL Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_Ud
 }
 
 jint JNICALL waiting_iterate_callback(jlong class_tag, jlong size, jlong *tag_ptr, jint length, void *user_data) {
-    int wait_duration = *((int *) user_data);
+    int wait_duration = *(reinterpret_cast<int*>(user_data));
     timing_sleep(wait_duration * 1000000LL);
     return JVMTI_VISIT_ABORT;
 }
@@ -430,12 +432,12 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_pa
         return;
     }
 
-    if (vm->GetEnv((void **) &jvmti, JVMTI_VERSION_1_2) != JNI_OK) {
+    if (vm->GetEnv(reinterpret_cast<void**>(&jvmti), JVMTI_VERSION_1_2) != JNI_OK) {
         return;
     }
 
     jvmtiCapabilities capabilities;
-    memset(&capabilities, 0, sizeof(capabilities));
+    std::memset(&capabilities, 0, sizeof(capabilities));
     capabilities.can_tag_objects = 1;
     jvmti->AddCapabilities(&capabilities);
 
