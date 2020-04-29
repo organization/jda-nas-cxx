@@ -125,7 +125,7 @@ namespace Manager {
             remaining = (jint) manager->queue_buffer_capacity;
         }
 
-        manager->lock.lock();
+        manager->lock.unlock();
 
         return remaining;
     }
@@ -307,7 +307,7 @@ namespace Manager {
             packet::Unsent packet_to_send = {nullptr};
 
             int64_t target_time = process_next_locked(manager, packet_to_send, current_time);
-            manager->lock.lock();
+            manager->lock.unlock();
 
             if (packet_to_send.packet.data != nullptr) {
                 if (packet_to_send.explicit_socket == SOCKET_INVALID) {
