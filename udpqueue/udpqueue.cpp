@@ -239,6 +239,7 @@ namespace Manager {
                     queue::pop_packet(item, unsent_packet);
 
                     delete[] unsent_packet.packet.data;
+                    unsent_packet.packet.data = nullptr;
                 }
             }
         }
@@ -298,6 +299,7 @@ namespace Manager {
                unsent_packet.address->ai_addr, sizeof(*unsent_packet.address->ai_addr));
 
         delete[] unsent_packet.packet.data;
+        unsent_packet.packet.data = nullptr;
         unsent_packet.packet.length = 0;
     }
 
