@@ -178,6 +178,7 @@ namespace Manager {
 
             if (item.address == nullptr) {
                 queue::addrinfo_free(item);
+                manager->queues.erase(key);
                 return false;
             }
 
@@ -267,7 +268,7 @@ namespace Manager {
         packet_out.explicit_socket = SOCKET_INVALID;
 
         if (item.buffer.size == 0) {
-            manager->queues.erase(item_pair.first);
+            manager->queues.erase(manager->queues.begin());
             queue::addrinfo_free(item);
             return get_target_time(manager, current_time);
         }
@@ -280,8 +281,8 @@ namespace Manager {
 
         queue::pop_packet(item, packet_out);
 
-        manager->queues.erase(key);
-        manager->queues.insert(std::make_pair(key, item));
+        //manager->queues.erase(key);
+        //manager->queues.insert(std::make_pair(key, item));
 
         current_time = timing_get_nanos();
 
