@@ -196,7 +196,7 @@ namespace Manager {
                 std::move(data),
                 data_length};
 
-        manager->queues[key].packet_buffer.insert(item.packet_buffer.begin() + next_index, queued_packet);
+        manager->queues[key].packet_buffer.emplace(item.packet_buffer.begin() + next_index, queued_packet);
         manager->queues[key].buffer.size++;
         return true;
     }
