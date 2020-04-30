@@ -1,26 +1,32 @@
-#include <jni.h>
-#include <jvmti.h>
-
 #include <cinttypes>
 #include <cstring>
 
+// Vector
 #include "lni/vector.hpp"
-#include "timing.h"
-#include "tsl/ordered_map.h"
 
+// Map
+#include "tsl/ordered_map.h"
+#include <unordered_map>
+
+#include "timing.h"
 extern "C" {
 #include "mutex.h"
 }
 
-#if defined(WIN32) || defined(_WIN32) || defined(__WIN32) && !defined(__CYGWIN__)
-#define WIN32_LEAN_AND_MEAN
+// JNI
+#include <jni.h>
+#include <jvmti.h>
 
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32) && !defined(__CYGWIN__)
+
+#define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
-
 #define SOCKET_INVALID INVALID_SOCKET
 typedef SOCKET socket_t;
+
 #else
+
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netdb.h>
@@ -30,6 +36,7 @@ typedef SOCKET socket_t;
 #define SOCKET_INVALID -1
 typedef int socket_t;
 #define closesocket close
+
 #endif
 
 namespace packet {
@@ -57,7 +64,7 @@ namespace queue {
     class Item {
     public:
         int64_t next_due_time{};
-        lni::vector<packet::Queued> packet_buffer;
+        std::unordered_map<size_t, packet::Queued> packet_buffer;
         Buffer buffer{};
         addrinfo *address{};
         socket_t explicit_socket{};
@@ -80,7 +87,7 @@ namespace queue {
     }
 
     static void pop_packet(queue::Item &item, packet::Unsent &packet_out) {
-        packet::Queued packet = std::move(item.packet_buffer[item.buffer.index]);
+        packet::Queued packet = item.packet_buffer[item.buffer.index];
 
         item.buffer.index = (item.buffer.index + 1) % item.buffer.capacity;
         item.buffer.size--;
@@ -88,6 +95,8 @@ namespace queue {
         packet_out.packet = std::move(packet);
         packet_out.address = item.address;
         packet_out.explicit_socket = item.explicit_socket;
+
+        item.packet_buffer.erase(item.buffer.index);
     }
 }
 
@@ -196,7 +205,7 @@ namespace Manager {
                 std::move(data),
                 data_length};
 
-        manager->queues[key].packet_buffer.emplace(item.packet_buffer.begin() + next_index, queued_packet);
+        manager->queues[key].packet_buffer[next_index] = queued_packet;
         manager->queues[key].buffer.size++;
         return true;
     }
