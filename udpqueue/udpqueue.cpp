@@ -35,8 +35,8 @@ typedef int socket_t;
 namespace packet {
     class Queued {
     public:
-        std::shared_ptr<uint8_t[]> data;
-        size_t length;
+        lni::vector<uint8_t> data;
+        size_t length{};
     };
 
     class Unsent {
@@ -80,17 +80,14 @@ namespace queue {
     }
 
     static void pop_packet(queue::Item &item, packet::Unsent &packet_out) {
-        packet::Queued packet = item.packet_buffer[item.buffer.index];
+        packet::Queued packet = std::move(item.packet_buffer[item.buffer.index]);
 
         item.buffer.index = (item.buffer.index + 1) % item.buffer.capacity;
         item.buffer.size--;
 
-        packet_out.packet = packet;
+        packet_out.packet = std::move(packet);
         packet_out.address = item.address;
         packet_out.explicit_socket = item.explicit_socket;
-
-        packet.data.reset();
-        packet.length = 0;
     }
 }
 
@@ -163,7 +160,7 @@ namespace Manager {
     }
 
     static bool queue_packet_locked(queue::Manager* manager, uint64_t key, const char* address, int32_t port,
-                                    std::shared_ptr<uint8_t[]>& data, size_t data_length, socket_t explicit_socket) {
+                                    lni::vector<uint8_t>&& data, socket_t explicit_socket) {
 
         if (!manager->queues.count(key)) {
             queue::Item item;
@@ -193,11 +190,13 @@ namespace Manager {
 
         size_t next_index = (item.buffer.index + item.buffer.size) % item.buffer.capacity;
 
+        auto data_length = data.size();
+
         packet::Queued queued_packet{
-                data,
+                std::move(data),
                 data_length};
 
-        item.packet_buffer.emplace(item.packet_buffer.begin() + next_index, queued_packet);
+        item.packet_buffer.emplace(item.packet_buffer.begin() + next_index, std::move(queued_packet));
         item.buffer.size++;
         return true;
     }
@@ -205,17 +204,15 @@ namespace Manager {
     static bool queue_packet(queue::Manager *manager, uint64_t key, const char *address, int32_t port, void *data,
                              size_t data_length, socket_t explicit_socket) {
 
-        std::shared_ptr<uint8_t[]> bytes = std::shared_ptr<uint8_t[]>(new uint8_t[data_length], std::default_delete<uint8_t[]>());
-
-        std::memcpy(bytes.get(), data, data_length);
+        lni::vector<uint8_t> bytes(static_cast<uint8_t*>(data), static_cast<uint8_t*>(data) + data_length);
 
         mutex_lock(manager->lock);
-        bool result = queue_packet_locked(manager, key, address, port, bytes, data_length, explicit_socket);
+        bool result = queue_packet_locked(manager, key, address, port, std::move(bytes), explicit_socket);
         mutex_unlock(manager->lock);
 
-        if (!result) {
+        /*if (!result) {
             bytes.reset();
-        }
+        }*/
 
         return result;
     }
@@ -233,7 +230,7 @@ namespace Manager {
                     packet::Unsent unsent_packet{};
                     queue::pop_packet(item, unsent_packet);
 
-                    unsent_packet.packet.data.reset();
+                    unsent_packet.packet.data.clear();
                 }
             }
         }
@@ -256,7 +253,7 @@ namespace Manager {
         auto item = item_pair.second;
         auto key = item_pair.first;
 
-        packet_out.packet.data.reset();
+        packet_out.packet.data.clear();
         packet_out.address = nullptr;
         packet_out.explicit_socket = SOCKET_INVALID;
 
@@ -289,10 +286,10 @@ namespace Manager {
     }
 
     static void dispatch_packet(socket_t socket_vx, packet::Unsent &unsent_packet) {
-        sendto(socket_vx, reinterpret_cast<const char*>(unsent_packet.packet.data.get()), unsent_packet.packet.length, 0,
+        sendto(socket_vx, reinterpret_cast<const char*>(unsent_packet.packet.data.data()), unsent_packet.packet.length, 0,
                unsent_packet.address->ai_addr, sizeof(*unsent_packet.address->ai_addr));
 
-        unsent_packet.packet.data.reset();
+        unsent_packet.packet.data.clear();
         unsent_packet.packet.length = 0;
     }
 
@@ -308,12 +305,12 @@ namespace Manager {
             }
 
             int64_t current_time = timing_get_nanos();
-            packet::Unsent packet_to_send = {nullptr};
+            packet::Unsent packet_to_send;
 
             int64_t target_time = process_next_locked(manager, packet_to_send, current_time);
             mutex_unlock(manager->lock);
 
-            if (packet_to_send.packet.data != nullptr) {
+            if (packet_to_send.packet.data.empty()) {
                 if (packet_to_send.explicit_socket == SOCKET_INVALID) {
                     socket_t socket_vx = packet_to_send.address->ai_family == AF_INET ? socket_v4 : socket_v6;
                     dispatch_packet(socket_vx, packet_to_send);
