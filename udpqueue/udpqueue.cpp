@@ -87,7 +87,7 @@ namespace queue {
     }
 
     static void pop_packet(queue::Item &item, packet::Unsent &packet_out) {
-        packet::Queued packet = item.packet_buffer[item.buffer.index];
+        packet::Queued& packet = item.packet_buffer[item.buffer.index];
 
         item.buffer.index = (item.buffer.index + 1) % item.buffer.capacity;
         item.buffer.size--;
@@ -134,10 +134,10 @@ namespace Manager {
         size_t remaining;
 
         if (manager->queues.count(key)) {
-            auto item = manager->queues[key];
+            auto& item = manager->queues[key];
             remaining = item.buffer.capacity - item.buffer.size;
         } else {
-            remaining = (jint) manager->queue_buffer_capacity;
+            remaining = manager->queue_buffer_capacity;
         }
 
         mutex_unlock(manager->lock);
@@ -171,7 +171,9 @@ namespace Manager {
     static bool queue_packet_locked(queue::Manager* manager, uint64_t key, const char* address, int32_t port,
                                     lni::vector<uint8_t>&& data, socket_t explicit_socket) {
 
-        if (!manager->queues.count(key)) {
+        if (manager == nullptr) {
+            return false;
+        } else if (!manager->queues.count(key)) {
             queue::Item item;
 
             item.next_due_time = 0;
@@ -236,7 +238,7 @@ namespace Manager {
 
             if (item.buffer.size > 0) {
                 while (item.buffer.size > 0) {
-                    packet::Unsent unsent_packet{};
+                    packet::Unsent unsent_packet;
                     queue::pop_packet(item, unsent_packet);
 
                     unsent_packet.packet.data.clear();
@@ -258,7 +260,7 @@ namespace Manager {
             return current_time + manager->packet_interval;
         }
 
-        const auto &item_pair = manager->queues.front();
+        const auto item_pair = manager->queues.front();
         auto item = item_pair.second;
         auto key = item_pair.first;
 
@@ -280,8 +282,8 @@ namespace Manager {
 
         queue::pop_packet(item, packet_out);
 
-        //manager->queues.erase(key);
-        //manager->queues.insert({key, item});
+        manager->queues.erase(key);
+        manager->queues.insert({key, item});
 
         current_time = timing_get_nanos();
 
@@ -319,7 +321,7 @@ namespace Manager {
             int64_t target_time = process_next_locked(manager, packet_to_send, current_time);
             mutex_unlock(manager->lock);
 
-            if (packet_to_send.packet.data.empty()) {
+            if (!packet_to_send.packet.data.empty()) {
                 if (packet_to_send.explicit_socket == SOCKET_INVALID) {
                     socket_t socket_vx = packet_to_send.address->ai_family == AF_INET ? socket_v4 : socket_v6;
                     dispatch_packet(socket_vx, packet_to_send);
