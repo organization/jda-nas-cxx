@@ -174,24 +174,25 @@ namespace Manager {
         if (!manager->queues.count(key)) {
             queue::Item item;
 
-            queue::Buffer buffer{};
-            buffer.capacity = manager->queue_buffer_capacity;
-
             item.next_due_time = 0;
-            item.address = resolve_address(address, port);
-            item.buffer = buffer;
-            item.explicit_socket = explicit_socket;
 
+            item.address = resolve_address(address, port);
             if (item.address == nullptr) {
                 queue::addrinfo_free(item);
                 manager->queues.erase(key);
                 return false;
             }
 
+            item.buffer = {
+                    0,
+                    0,
+                    manager->queue_buffer_capacity};
+            item.explicit_socket = explicit_socket;
+
             manager->queues.insert({key, item});
         }
 
-        queue::Item item = manager->queues[key];
+        auto& item = manager->queues[key];
 
         if (item.buffer.size >= item.buffer.capacity) {
             return false;
@@ -201,12 +202,11 @@ namespace Manager {
 
         auto data_length = data.size();
 
-        packet::Queued queued_packet{
+        item.packet_buffer[next_index] = {
                 std::move(data),
                 data_length};
+        item.buffer.size++;
 
-        manager->queues[key].packet_buffer[next_index] = queued_packet;
-        manager->queues[key].buffer.size++;
         return true;
     }
 
