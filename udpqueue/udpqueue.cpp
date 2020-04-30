@@ -103,12 +103,14 @@ namespace queue {
 namespace Manager {
 
     static void destroy(queue::Manager *manager) {
-        mutex_lock(manager->lock);
-        manager->shutting_down = true;
-        mutex_unlock(manager->lock);
+        if (manager->lock != nullptr && manager->process_lock != nullptr) {
+            mutex_lock(manager->lock);
+            manager->shutting_down = true;
+            mutex_unlock(manager->lock);
 
-        mutex_lock(manager->process_lock);
-        mutex_unlock(manager->process_lock);
+            mutex_lock(manager->process_lock);
+            mutex_unlock(manager->process_lock);
+        }
 
         mutex_destroy(manager->lock);
         mutex_destroy(manager->process_lock);
@@ -124,6 +126,8 @@ namespace Manager {
 
         manager->queue_buffer_capacity = queue_buffer_capacity;
         manager->packet_interval = packet_interval;
+
+        manager->queues.reserve(100);
 
         return manager;
     }
@@ -177,21 +181,15 @@ namespace Manager {
             queue::Item item;
 
             item.next_due_time = 0;
-
             item.address = resolve_address(address, port);
-            if (item.address == nullptr) {
-                queue::addrinfo_free(item);
-                manager->queues.erase(key);
-                return false;
-            }
-
             item.buffer = {
                     0,
                     0,
                     manager->queue_buffer_capacity};
             item.explicit_socket = explicit_socket;
+            item.packet_buffer.reserve(item.buffer.capacity);
 
-            manager->queues.insert({key, item});
+            manager->queues.insert({key, std::move(item)});
         }
 
         auto& item = manager->queues[key];
@@ -240,8 +238,6 @@ namespace Manager {
                 while (item.buffer.size > 0) {
                     packet::Unsent unsent_packet;
                     queue::pop_packet(item, unsent_packet);
-
-                    unsent_packet.packet.data.clear();
                 }
             }
         }
@@ -272,9 +268,7 @@ namespace Manager {
             manager->queues.erase(key);
             queue::addrinfo_free(item);
             return get_target_time(manager, current_time);
-        }
-
-        if (item.next_due_time == 0) {
+        } else if (item.next_due_time == 0) {
             item.next_due_time = current_time;
         } else if (item.next_due_time - current_time >= 1500000LL) {
             return item.next_due_time;
