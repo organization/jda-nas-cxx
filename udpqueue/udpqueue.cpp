@@ -182,7 +182,7 @@ namespace Manager {
             manager->queues.insert({key, item});
         }
 
-        queue::Item& item = manager->queues[key];
+        queue::Item item = manager->queues[key];
 
         if (item.buffer.size >= item.buffer.capacity) {
             return false;
@@ -196,8 +196,8 @@ namespace Manager {
                 std::move(data),
                 data_length};
 
-        item.packet_buffer.insert(item.packet_buffer.begin() + next_index, queued_packet);
-        item.buffer.size++;
+        manager->queues[key].packet_buffer.insert(item.packet_buffer.begin() + next_index, queued_packet);
+        manager->queues[key].buffer.size++;
         return true;
     }
 
