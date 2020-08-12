@@ -27,10 +27,10 @@ typedef SOCKET socket_t;
 
 #else
 
-#include <sys/types.h>
-#include <sys/socket.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #define SOCKET_INVALID -1
@@ -39,70 +39,14 @@ typedef int socket_t;
 
 #endif
 
-namespace packet {
-    class Queued {
-    public:
-        lni::vector<uint8_t> data;
-        size_t length{};
-    };
+#include "packet/Queued.h"
+#include "packet/Unsent.h"
 
-    class Unsent {
-    public:
-        Queued packet;
-        addrinfo* address{};
-        socket_t explicit_socket{};
-    };
-}
+#include "queue/Queue.h"
 
-namespace queue {
-    struct Buffer {
-        size_t index;
-        size_t size;
-        size_t capacity;
-    };
+namespace manager {
 
-    class Item {
-    public:
-        int64_t next_due_time{};
-        std::unordered_map<size_t, packet::Queued> packet_buffer;
-        Buffer buffer{};
-        addrinfo *address{};
-        socket_t explicit_socket{};
-    };
-
-    class Manager {
-    public:
-        tsl::ordered_map<int64_t, Item> queues;
-        size_t queue_buffer_capacity{};
-        int64_t packet_interval{};
-        mutex_t lock{};
-        mutex_t process_lock{};
-        bool shutting_down{};
-    };
-
-    static void addrinfo_free(const queue::Item& entry) {
-        if (entry.address != nullptr) {
-            freeaddrinfo(entry.address);
-        }
-    }
-
-    static void pop_packet(queue::Item &item, packet::Unsent &packet_out) {
-        packet::Queued& packet = item.packet_buffer[item.buffer.index];
-
-        item.buffer.index = (item.buffer.index + 1) % item.buffer.capacity;
-        item.buffer.size--;
-
-        packet_out.packet = std::move(packet);
-        packet_out.address = item.address;
-        packet_out.explicit_socket = item.explicit_socket;
-
-        item.packet_buffer.erase(item.buffer.index);
-    }
-}
-
-namespace Manager {
-
-    static void destroy(queue::Manager *manager) {
+    static void destroy(queue::Manager* manager) {
         if (manager->lock != nullptr && manager->process_lock != nullptr) {
             mutex_lock(manager->lock);
             manager->shutting_down = true;
@@ -139,7 +83,7 @@ namespace Manager {
 
         if (manager->queues.count(key)) {
             auto& item = manager->queues[key];
-            remaining = item.buffer.capacity - item.buffer.size;
+            remaining = item->buffer.capacity - item->buffer.size;
         } else {
             remaining = manager->queue_buffer_capacity;
         }
@@ -149,142 +93,45 @@ namespace Manager {
         return remaining;
     }
 
-    static addrinfo *resolve_address(const char *address, int32_t port) {
-        char port_text[32];
-
-        addrinfo hints{};
-
-        std::memset(&hints, 0, sizeof(hints));
-
-#ifndef AI_NUMERICSERV
-        hints.ai_flags = AI_NUMERICHOST;
-#else
-        hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
-#endif
-        hints.ai_socktype = SOCK_DGRAM;
-        hints.ai_protocol = IPPROTO_UDP;
-
-        std::snprintf(port_text, sizeof(port_text), "%" PRId32, port);
-
-        addrinfo* result = nullptr;
-        getaddrinfo(address, port_text, &hints, &result);
-
-        return result;
-    }
-
-    static bool queue_packet_locked(queue::Manager* manager, uint64_t key, const char* address, int32_t port,
-                                    lni::vector<uint8_t>&& data, socket_t explicit_socket) {
-
-        if (manager == nullptr) {
-            return false;
-        } else if (!manager->queues.count(key)) {
-            queue::Item item;
-
-            item.next_due_time = 0;
-            item.address = resolve_address(address, port);
-            item.buffer = {
-                    0,
-                    0,
-                    manager->queue_buffer_capacity};
-            item.explicit_socket = explicit_socket;
-            item.packet_buffer.reserve(item.buffer.capacity);
-
-            manager->queues.insert({key, std::move(item)});
-        }
-
-        auto& item = manager->queues[key];
-
-        if (item.buffer.size >= item.buffer.capacity) {
-            return false;
-        }
-
-        size_t next_index = (item.buffer.index + item.buffer.size) % item.buffer.capacity;
-
-        auto data_length = data.size();
-
-        item.packet_buffer[next_index] = {
-                std::move(data),
-                data_length};
-        item.buffer.size++;
-
-        return true;
-    }
-
-    static bool queue_packet(queue::Manager *manager, uint64_t key, const char *address, int32_t port, void *data,
-                             size_t data_length, socket_t explicit_socket) {
-
-        lni::vector<uint8_t> bytes(static_cast<uint8_t*>(data), static_cast<uint8_t*>(data) + data_length);
-
-        mutex_lock(manager->lock);
-        bool result = queue_packet_locked(manager, key, address, port, std::move(bytes), explicit_socket);
-        mutex_unlock(manager->lock);
-
-        /*if (!result) {
-            bytes.reset();
-        }*/
-
-        return result;
-    }
-
-    static bool queue_delete(queue::Manager *manager, uint64_t key) {
-        bool found = false;
-        mutex_lock(manager->lock);
-
-        if (manager->queues.count(key)) {
-            found = true;
-            queue::Item &item = manager->queues[key];
-
-            if (item.buffer.size > 0) {
-                while (item.buffer.size > 0) {
-                    packet::Unsent unsent_packet;
-                    queue::pop_packet(item, unsent_packet);
-                }
-            }
-        }
-
-        mutex_unlock(manager->lock);
-        return found;
-    }
-
     static int64_t get_target_time(queue::Manager *manager, int64_t current_time) {
         return manager->queues.empty() ? current_time + manager->packet_interval
-                                       : manager->queues.front().second.next_due_time;
+                                       : manager->queues.front().second->next_due_time;
     }
 
     static int64_t process_next_locked(queue::Manager *manager, packet::Unsent &packet_out, int64_t current_time) {
-        if (manager->queues.empty()) {
-            return current_time + manager->packet_interval;
-        }
-
-        const auto item_pair = manager->queues.front();
-        auto item = item_pair.second;
-        auto key = item_pair.first;
-
         packet_out.packet.data.clear();
         packet_out.address = nullptr;
         packet_out.explicit_socket = SOCKET_INVALID;
 
-        if (item.buffer.size == 0) {
+        if (manager->queues.empty()) {
+            return current_time + manager->packet_interval;
+        }
+
+        auto& item_pair = manager->queues.front();
+        auto item = item_pair.second;
+        auto key = item_pair.first;
+
+        if (item->buffer.size == 0) {
             manager->queues.erase(key);
             queue::addrinfo_free(item);
             return get_target_time(manager, current_time);
-        } else if (item.next_due_time == 0) {
-            item.next_due_time = current_time;
-        } else if (item.next_due_time - current_time >= 1500000LL) {
-            return item.next_due_time;
+        } else if (item->next_due_time == 0) {
+            item->next_due_time = current_time;
+        } else if (item->next_due_time - current_time >= 1500000LL) {
+            return item->next_due_time;
         }
 
-        queue::pop_packet(item, packet_out);
+        queue::pop(item, packet_out);
 
         manager->queues.erase(key);
         manager->queues.insert({key, item});
 
         current_time = timing_get_nanos();
 
-        if (current_time - item.next_due_time >= 2 * manager->packet_interval) {
-            item.next_due_time = current_time + manager->packet_interval;
+        if (current_time - item->next_due_time >= 2 * manager->packet_interval) {
+            item->next_due_time = current_time + manager->packet_interval;
         } else {
-            item.next_due_time += manager->packet_interval;
+            item->next_due_time += manager->packet_interval;
         }
 
         return get_target_time(manager, current_time);
@@ -353,13 +200,13 @@ JNIEXPORT jlong JNICALL
 Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_create(JNIEnv* jni, jobject me,
                                                                                      jint queue_buffer_capacity,
                                                                                      jlong packet_interval) {
-    return reinterpret_cast<jlong>(Manager::create(queue_buffer_capacity, packet_interval));
+    return reinterpret_cast<jlong>(manager::create(queue_buffer_capacity, packet_interval));
 }
 
 JNIEXPORT void JNICALL
 Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_destroy(JNIEnv* jni, jobject me,
                                                                                       jlong instance) {
-    Manager::destroy(reinterpret_cast<queue::Manager*>(instance));
+    manager::destroy(reinterpret_cast<queue::Manager*>(instance));
 }
 
 JNIEXPORT jint JNICALL
@@ -367,7 +214,7 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_ge
                                                                                                    jobject me,
                                                                                                    jlong instance,
                                                                                                    jlong key) {
-    return Manager::get_remaining_capacity(reinterpret_cast<queue::Manager*>(instance), key);
+    return manager::get_remaining_capacity(reinterpret_cast<queue::Manager*>(instance), key);
 }
 
 JNIEXPORT jboolean JNICALL
@@ -381,8 +228,8 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_qu
     const char* address = jni->GetStringUTFChars(address_string, nullptr);
     void* bytes = jni->GetDirectBufferAddress(data_buffer);
 
-    bool result = Manager::queue_packet(reinterpret_cast<queue::Manager*>(instance), key, address, port, bytes,
-                                        data_length, SOCKET_INVALID);
+    bool result = queue::push(reinterpret_cast<queue::Manager*>(instance), key, address, port, bytes,
+                              data_length, SOCKET_INVALID);
 
     jni->ReleaseStringUTFChars(address_string, address);
 
@@ -397,8 +244,8 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_qu
     const char* address = jni->GetStringUTFChars(address_string, nullptr);
     void* bytes = jni->GetDirectBufferAddress(data_buffer);
 
-    bool result = Manager::queue_packet(reinterpret_cast<queue::Manager*>(instance), key, address, port, bytes,
-                                        data_length, socket_handle);
+    bool result = queue::push(reinterpret_cast<queue::Manager*>(instance), key, address, port, bytes,
+                              data_length, socket_handle);
 
     jni->ReleaseStringUTFChars(address_string, address);
 
@@ -408,20 +255,20 @@ Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_qu
 JNIEXPORT jboolean JNICALL Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_deleteQueue(
         JNIEnv* jni, jobject me, jlong instance, jlong key) {
 
-    bool result = Manager::queue_delete(reinterpret_cast<queue::Manager*>(instance), key);
+    bool result = queue::remove(reinterpret_cast<queue::Manager*>(instance), key);
     return result ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
 Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_process(JNIEnv* jni, jobject me,
                                                                                       jlong instance) {
-    Manager::process((queue::Manager*) instance);
+    manager::process((queue::Manager*) instance);
 }
 
 JNIEXPORT void JNICALL Java_com_sedmelluq_discord_lavaplayer_udpqueue_natives_UdpQueueManagerLibrary_processWithSocket(
         JNIEnv* jni, jobject me, jlong instance, jlong socket_v4, jlong socket_v6) {
 
-    Manager::process_with_socket((queue::Manager*) instance, (socket_t) socket_v4, (socket_t) socket_v6);
+    manager::process_with_socket((queue::Manager*) instance, (socket_t) socket_v4, (socket_t) socket_v6);
 }
 
 jint JNICALL waiting_iterate_callback(jlong class_tag, jlong size, jlong* tag_ptr, jint length, void* user_data) {
